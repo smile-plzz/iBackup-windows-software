@@ -1,22 +1,25 @@
+namespace iBackup.App.ViewModels;
+
 using System;
 using System.IO;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using Microsoft.UI.Dispatching;
+using iBackup.App.Helpers;
 using iBackup.Core.Interfaces;
 using iBackup.Core.Models;
-
-namespace iBackup.App.ViewModels;
+using Microsoft.UI.Dispatching;
 
 /// <summary>
 /// ViewModel for application and backup configuration settings.
-/// Manages persistence of backup directory, file organization patterns, media filters, and startup behaviors.
+/// Manages persistence of backup directory, file organization patterns, media filters,
+/// automated schedules, and startup behaviors.
 /// </summary>
 public partial class SettingsViewModel : ObservableObject
 {
     private const string GlobalSettingsKey = "global_default";
     private readonly IManifestRepository _manifestRepository;
+    private readonly IBackupSchedulerService _schedulerService;
     private readonly DispatcherQueue? _dispatcherQueue;
     private bool _isInitialized;
 
@@ -42,7 +45,7 @@ public partial class SettingsViewModel : ObservableObject
     private bool _backupScreenshots = true;
 
     [ObservableProperty]
-    private bool _verifyIntegrity = true;
+    private bool _verifyIntegrity;
 
     [ObservableProperty]
     private bool _startWithWindows;
@@ -53,8 +56,31 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty]
     private bool _minimizeToTray = true;
 
+    // Scheduled Backups
     [ObservableProperty]
-    private string _appVersion = $"Version {typeof(SettingsViewModel).Assembly.GetName().Version?.ToString(3) ?? "unknown"} · Preview";
+    private bool _isScheduleEnabled;
+
+    [ObservableProperty]
+    private int _selectedScheduleFrequencyIndex = 0; // 0 = Daily, 1 = Weekly, 2 = On Connection
+
+    [ObservableProperty]
+    private TimeSpan _scheduleTime = new(21, 0, 0); // 9:00 PM
+
+    [ObservableProperty]
+    private bool _scheduleOnlyOnAcPower = true;
+
+    [ObservableProperty]
+    private string _scheduleSummaryText = "Automatic daily backup at 21:00";
+
+    // Wireless Sync Settings
+    [ObservableProperty]
+    private bool _enableWirelessSync = true;
+
+    [ObservableProperty]
+    private int _wirelessPort = 52424;
+
+    [ObservableProperty]
+    private string _appVersion = $"Version {typeof(SettingsViewModel).Assembly.GetName().Version?.ToString(3) ?? "0.2.0"} · Preview";
 
     [ObservableProperty]
     private string _gitHubUrl = "https://github.com/smile-plzz/iBackup";
@@ -65,14 +91,18 @@ public partial class SettingsViewModel : ObservableObject
     /// <summary>
     /// Initializes a new instance of the <see cref="SettingsViewModel"/> class.
     /// </summary>
-    /// <param name="manifestRepository">The manifest repository for loading and saving settings.</param>
-    public SettingsViewModel(IManifestRepository manifestRepository)
+    public SettingsViewModel(
+        IManifestRepository manifestRepository,
+        IBackupSchedulerService schedulerService)
     {
         _manifestRepository = manifestRepository ?? throw new ArgumentNullException(nameof(manifestRepository));
+        _schedulerService = schedulerService ?? throw new ArgumentNullException(nameof(schedulerService));
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
         var defaultPictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
         DestinationPath = Path.Combine(defaultPictures, "iBackup");
+
+        StartWithWindows = StartupHelper.IsStartupEnabled();
 
         _ = LoadSettingsAsync();
     }
@@ -103,6 +133,25 @@ public partial class SettingsViewModel : ObservableObject
                     VerifyIntegrity = settings.VerifyIntegrity;
                     AutoBackup = settings.AutoBackup;
                     MinimizeToTray = settings.MinimizeToTray;
+                    StartWithWindows = settings.StartWithWindows;
+                    EnableWirelessSync = settings.EnableWirelessSync;
+                    WirelessPort = settings.WirelessPort;
+
+                    if (settings.Schedule != null)
+                    {
+                        IsScheduleEnabled = settings.Schedule.IsEnabled;
+                        SelectedScheduleFrequencyIndex = settings.Schedule.Frequency switch
+                        {
+                            ScheduleFrequency.Daily => 0,
+                            ScheduleFrequency.Weekly => 1,
+                            ScheduleFrequency.OnConnect => 2,
+                            _ => 0
+                        };
+                        ScheduleTime = settings.Schedule.ScheduledTime;
+                        ScheduleOnlyOnAcPower = settings.Schedule.OnlyOnAcPower;
+                    }
+
+                    UpdateScheduleSummary();
                 });
             }
         }
@@ -114,6 +163,24 @@ public partial class SettingsViewModel : ObservableObject
         {
             _isInitialized = true;
         }
+    }
+
+    private void UpdateScheduleSummary()
+    {
+        if (!IsScheduleEnabled)
+        {
+            ScheduleSummaryText = "Scheduled backup is currently disabled.";
+            return;
+        }
+
+        string timeStr = $"{ScheduleTime.Hours:D2}:{ScheduleTime.Minutes:D2}";
+        ScheduleSummaryText = SelectedScheduleFrequencyIndex switch
+        {
+            0 => $"Runs every day at {timeStr} (AC power required: {(ScheduleOnlyOnAcPower ? "Yes" : "No")})",
+            1 => $"Runs every Sunday at {timeStr}",
+            2 => "Runs automatically whenever your iPhone connects",
+            _ => "Runs on configured schedule"
+        };
     }
 
     partial void OnSelectedOrganizationIndexChanged(int value)
@@ -134,9 +201,40 @@ public partial class SettingsViewModel : ObservableObject
     partial void OnBackupRawChanged(bool value) => AutoSaveIfInitialized();
     partial void OnBackupScreenshotsChanged(bool value) => AutoSaveIfInitialized();
     partial void OnVerifyIntegrityChanged(bool value) => AutoSaveIfInitialized();
-    partial void OnStartWithWindowsChanged(bool value) => AutoSaveIfInitialized();
     partial void OnAutoBackupChanged(bool value) => AutoSaveIfInitialized();
     partial void OnMinimizeToTrayChanged(bool value) => AutoSaveIfInitialized();
+    partial void OnEnableWirelessSyncChanged(bool value) => AutoSaveIfInitialized();
+    partial void OnWirelessPortChanged(int value) => AutoSaveIfInitialized();
+
+    partial void OnIsScheduleEnabledChanged(bool value)
+    {
+        UpdateScheduleSummary();
+        AutoSaveIfInitialized();
+    }
+
+    partial void OnSelectedScheduleFrequencyIndexChanged(int value)
+    {
+        UpdateScheduleSummary();
+        AutoSaveIfInitialized();
+    }
+
+    partial void OnScheduleTimeChanged(TimeSpan value)
+    {
+        UpdateScheduleSummary();
+        AutoSaveIfInitialized();
+    }
+
+    partial void OnScheduleOnlyOnAcPowerChanged(bool value)
+    {
+        UpdateScheduleSummary();
+        AutoSaveIfInitialized();
+    }
+
+    partial void OnStartWithWindowsChanged(bool value)
+    {
+        StartupHelper.SetStartupEnabled(value);
+        AutoSaveIfInitialized();
+    }
 
     private void AutoSaveIfInitialized()
     {
@@ -147,13 +245,27 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
-    /// Explicitly saves the current settings to repository.
+    /// Explicitly saves the current settings to repository and updates scheduler.
     /// </summary>
     [RelayCommand]
     public async Task SaveSettingsAsync()
     {
         try
         {
+            var schedule = new BackupSchedule
+            {
+                IsEnabled = IsScheduleEnabled,
+                Frequency = SelectedScheduleFrequencyIndex switch
+                {
+                    0 => ScheduleFrequency.Daily,
+                    1 => ScheduleFrequency.Weekly,
+                    2 => ScheduleFrequency.OnConnect,
+                    _ => ScheduleFrequency.Daily
+                },
+                ScheduledTime = ScheduleTime,
+                OnlyOnAcPower = ScheduleOnlyOnAcPower
+            };
+
             var settings = new BackupSettings
             {
                 DestinationPath = DestinationPath,
@@ -165,10 +277,16 @@ public partial class SettingsViewModel : ObservableObject
                 IncludeScreenshots = BackupScreenshots,
                 VerifyIntegrity = VerifyIntegrity,
                 AutoBackup = AutoBackup,
-                MinimizeToTray = MinimizeToTray
+                MinimizeToTray = MinimizeToTray,
+                StartWithWindows = StartWithWindows,
+                EnableWirelessSync = EnableWirelessSync,
+                WirelessPort = WirelessPort,
+                Schedule = schedule
             };
 
             await _manifestRepository.SaveDeviceSettingsAsync(settings);
+            await _schedulerService.UpdateScheduleAsync(GlobalSettingsKey, schedule);
+
             StatusMessage = "Settings saved successfully.";
         }
         catch (Exception ex)

@@ -120,6 +120,22 @@ public partial class App : Application
                 Log.Error(ex, "Failed to start IDeviceMonitor.");
             }
 
+            // Initialize and start background scheduler service
+            try
+            {
+                var scheduler = _host.Services.GetService<IBackupSchedulerService>();
+                if (scheduler != null)
+                {
+                    await scheduler.LoadScheduleAsync();
+                    scheduler.Start();
+                    Log.Information("Backup scheduler service initialized and started.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Failed to initialize IBackupSchedulerService.");
+            }
+
             // Create and activate MainWindow
             MainWindow = _host.Services.GetRequiredService<MainWindow>();
             MainWindow.Activate();
@@ -151,11 +167,14 @@ public partial class App : Application
                 services.AddSingleton<IMediaScanner, MediaScannerService>();
                 services.AddSingleton<IBackupEngine, BackupEngine>();
                 services.AddSingleton<IFileTransferService, FileTransferService>();
+                services.AddSingleton<IBackupSchedulerService, BackupSchedulerService>();
+                services.AddSingleton<ILocalWirelessServer, LocalWirelessServer>();
 
-                // ViewModels (transient)
+                // ViewModels
                 services.AddSingleton<MainViewModel>();
                 services.AddTransient<SettingsViewModel>();
                 services.AddTransient<HistoryViewModel>();
+                services.AddTransient<WirelessViewModel>();
 
                 // MainWindow
                 services.AddSingleton<MainWindow>();
@@ -181,7 +200,6 @@ public partial class App : Application
     private void OnUnhandledException(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
     {
         Log.Error(e.Exception, "Unhandled WinUI XAML exception: {Message}", e.Message);
-        // Prevent application crash if exception is recoverable
         e.Handled = true;
     }
 

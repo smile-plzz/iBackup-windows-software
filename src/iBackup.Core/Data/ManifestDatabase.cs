@@ -58,9 +58,21 @@ public static class ManifestDatabase
             include_screenshots INTEGER DEFAULT 1,
             verify_integrity INTEGER DEFAULT 0,
             minimize_to_tray INTEGER DEFAULT 1,
+            start_with_windows INTEGER DEFAULT 0,
+            enable_wireless INTEGER DEFAULT 1,
+            wireless_port INTEGER DEFAULT 52424,
+            schedule_json TEXT,
             last_seen TEXT
         );
         """;
+
+    private static readonly string[] Migrations = new[]
+    {
+        "ALTER TABLE device_settings ADD COLUMN start_with_windows INTEGER DEFAULT 0;",
+        "ALTER TABLE device_settings ADD COLUMN enable_wireless INTEGER DEFAULT 1;",
+        "ALTER TABLE device_settings ADD COLUMN wireless_port INTEGER DEFAULT 52424;",
+        "ALTER TABLE device_settings ADD COLUMN schedule_json TEXT;"
+    };
 
     /// <summary>
     /// Gets the absolute filesystem path to the SQLite manifest database file.
@@ -120,9 +132,13 @@ public static class ManifestDatabase
         using var connection = GetConnection();
         connection.Open();
 
-        using var command = connection.CreateCommand();
-        command.CommandText = CreateTablesSql;
-        command.ExecuteNonQuery();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = CreateTablesSql;
+            command.ExecuteNonQuery();
+        }
+
+        ApplyMigrations(connection);
     }
 
     /// <summary>
@@ -146,8 +162,29 @@ public static class ManifestDatabase
         using var connection = GetConnection();
         await connection.OpenAsync(cancellationToken);
 
-        using var command = connection.CreateCommand();
-        command.CommandText = CreateTablesSql;
-        await command.ExecuteNonQueryAsync(cancellationToken);
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText = CreateTablesSql;
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        ApplyMigrations(connection);
+    }
+
+    private static void ApplyMigrations(SqliteConnection connection)
+    {
+        foreach (var sql in Migrations)
+        {
+            try
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = sql;
+                command.ExecuteNonQuery();
+            }
+            catch (SqliteException)
+            {
+                // Column already exists or duplicate column; ignore safely
+            }
+        }
     }
 }

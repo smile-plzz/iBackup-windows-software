@@ -1,7 +1,11 @@
 namespace iBackup.Core.Data;
 
+using System;
+using System.Collections.Generic;
 using System.Data;
 using System.Globalization;
+using System.Text.Json;
+using System.Threading.Tasks;
 using iBackup.Core.Interfaces;
 using iBackup.Core.Models;
 using Microsoft.Data.Sqlite;
@@ -331,7 +335,8 @@ public sealed class ManifestRepository : IManifestRepository
         const string sql = """
             SELECT device_udid, destination_path, auto_backup, organization_mode,
                    include_photos, include_videos, include_raw, include_screenshots,
-                   verify_integrity, minimize_to_tray
+                   verify_integrity, minimize_to_tray,
+                   start_with_windows, enable_wireless, wireless_port, schedule_json
             FROM device_settings
             WHERE device_udid = @device_udid;
             """;
@@ -356,10 +361,27 @@ public sealed class ManifestRepository : IManifestRepository
             bool incScreenshots = reader.GetInt32(7) != 0;
             bool verifyIntegrity = reader.GetInt32(8) != 0;
             bool minimizeToTray = reader.GetInt32(9) != 0;
+            bool startWithWindows = !reader.IsDBNull(10) && reader.GetInt32(10) != 0;
+            bool enableWireless = reader.IsDBNull(11) || reader.GetInt32(11) != 0;
+            int wirelessPort = reader.IsDBNull(12) ? 52424 : reader.GetInt32(12);
+            string? scheduleJson = reader.IsDBNull(13) ? null : reader.GetString(13);
 
             if (!Enum.TryParse<FileOrganizationMode>(orgModeStr, ignoreCase: true, out var orgMode))
             {
                 orgMode = FileOrganizationMode.ByYearMonth;
+            }
+
+            BackupSchedule? schedule = null;
+            if (!string.IsNullOrWhiteSpace(scheduleJson))
+            {
+                try
+                {
+                    schedule = JsonSerializer.Deserialize<BackupSchedule>(scheduleJson);
+                }
+                catch
+                {
+                    schedule = null;
+                }
             }
 
             return new BackupSettings
@@ -373,7 +395,11 @@ public sealed class ManifestRepository : IManifestRepository
                 IncludeRaw = incRaw,
                 IncludeScreenshots = incScreenshots,
                 VerifyIntegrity = verifyIntegrity,
-                MinimizeToTray = minimizeToTray
+                MinimizeToTray = minimizeToTray,
+                StartWithWindows = startWithWindows,
+                EnableWirelessSync = enableWireless,
+                WirelessPort = wirelessPort > 0 ? wirelessPort : 52424,
+                Schedule = schedule ?? new BackupSchedule()
             };
         }
 
@@ -390,11 +416,15 @@ public sealed class ManifestRepository : IManifestRepository
             INSERT INTO device_settings (
                 device_udid, device_name, destination_path, auto_backup,
                 organization_mode, include_photos, include_videos, include_raw,
-                include_screenshots, verify_integrity, minimize_to_tray, last_seen
+                include_screenshots, verify_integrity, minimize_to_tray,
+                start_with_windows, enable_wireless, wireless_port, schedule_json,
+                last_seen
             ) VALUES (
                 @device_udid, @device_name, @destination_path, @auto_backup,
                 @organization_mode, @include_photos, @include_videos, @include_raw,
-                @include_screenshots, @verify_integrity, @minimize_to_tray, @last_seen
+                @include_screenshots, @verify_integrity, @minimize_to_tray,
+                @start_with_windows, @enable_wireless, @wireless_port, @schedule_json,
+                @last_seen
             )
             ON CONFLICT(device_udid) DO UPDATE SET
                 destination_path = excluded.destination_path,
@@ -406,11 +436,17 @@ public sealed class ManifestRepository : IManifestRepository
                 include_screenshots = excluded.include_screenshots,
                 verify_integrity = excluded.verify_integrity,
                 minimize_to_tray = excluded.minimize_to_tray,
+                start_with_windows = excluded.start_with_windows,
+                enable_wireless = excluded.enable_wireless,
+                wireless_port = excluded.wireless_port,
+                schedule_json = excluded.schedule_json,
                 last_seen = excluded.last_seen;
             """;
 
         using var connection = ManifestDatabase.GetConnection();
         await connection.OpenAsync();
+
+        string scheduleJson = JsonSerializer.Serialize(settings.Schedule ?? new BackupSchedule());
 
         using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -425,6 +461,10 @@ public sealed class ManifestRepository : IManifestRepository
         command.Parameters.AddWithValue("@include_screenshots", settings.IncludeScreenshots ? 1 : 0);
         command.Parameters.AddWithValue("@verify_integrity", settings.VerifyIntegrity ? 1 : 0);
         command.Parameters.AddWithValue("@minimize_to_tray", settings.MinimizeToTray ? 1 : 0);
+        command.Parameters.AddWithValue("@start_with_windows", settings.StartWithWindows ? 1 : 0);
+        command.Parameters.AddWithValue("@enable_wireless", settings.EnableWirelessSync ? 1 : 0);
+        command.Parameters.AddWithValue("@wireless_port", settings.WirelessPort);
+        command.Parameters.AddWithValue("@schedule_json", scheduleJson);
         command.Parameters.AddWithValue("@last_seen", DateTime.UtcNow.ToString(Iso8601Format));
 
         await command.ExecuteNonQueryAsync();

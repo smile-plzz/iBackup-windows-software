@@ -60,6 +60,13 @@ public sealed partial class MainWindow : Window
                 }
                 break;
 
+            case "wireless":
+                if (ContentFrame.CurrentSourcePageType != typeof(WirelessPage))
+                {
+                    ContentFrame.Navigate(typeof(WirelessPage));
+                }
+                break;
+
             case "history":
                 if (ContentFrame.CurrentSourcePageType != typeof(HistoryPage))
                 {
@@ -75,8 +82,4 @@ public sealed partial class MainWindow : Window
                 break;
         }
     }
-
-    /// <summary>
-    /// Restores the window when clicking on the system tray icon.
-    /// </summary>
 }

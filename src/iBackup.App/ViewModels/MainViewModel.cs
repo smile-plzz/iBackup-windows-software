@@ -10,18 +10,20 @@ using Microsoft.UI.Xaml.Controls;
 using iBackup.App.Converters;
 using iBackup.Core.Interfaces;
 using iBackup.Core.Models;
+using iBackup.Core.Services;
 
 namespace iBackup.App.ViewModels;
 
 /// <summary>
 /// ViewModel for the main dashboard view, managing device connection status,
-/// backup execution lifecycle, and live transfer progress reporting.
+/// backup execution lifecycle, storage meters, automated scheduling, and live transfer progress reporting.
 /// </summary>
 public partial class MainViewModel : ObservableObject
 {
     private readonly IDeviceMonitor _deviceMonitor;
     private readonly IBackupEngine _backupEngine;
     private readonly IManifestRepository _manifestRepository;
+    private readonly IBackupSchedulerService _schedulerService;
     private readonly DispatcherQueue? _dispatcherQueue;
     private CancellationTokenSource? _backupCts;
 
@@ -98,6 +100,21 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty]
     private bool _minimizeToTray = true;
 
+    [ObservableProperty]
+    private double _deviceStoragePercent;
+
+    [ObservableProperty]
+    private string _deviceStorageFormatted = string.Empty;
+
+    [ObservableProperty]
+    private string _destinationFreeSpaceSummary = string.Empty;
+
+    [ObservableProperty]
+    private string _connectionModeText = "USB Connection";
+
+    [ObservableProperty]
+    private string _nextScheduledBackupSummary = string.Empty;
+
     /// <summary>
     /// Event fired when the user requests folder selection via the Browse command.
     /// </summary>
@@ -106,17 +123,16 @@ public partial class MainViewModel : ObservableObject
     /// <summary>
     /// Initializes a new instance of the <see cref="MainViewModel"/> class.
     /// </summary>
-    /// <param name="deviceMonitor">The device monitor service for detecting iOS devices.</param>
-    /// <param name="backupEngine">The backup engine coordinating media transfers.</param>
-    /// <param name="manifestRepository">The SQLite manifest repository for historical backup metadata.</param>
     public MainViewModel(
         IDeviceMonitor deviceMonitor,
         IBackupEngine backupEngine,
-        IManifestRepository manifestRepository)
+        IManifestRepository manifestRepository,
+        IBackupSchedulerService schedulerService)
     {
         _deviceMonitor = deviceMonitor ?? throw new ArgumentNullException(nameof(deviceMonitor));
         _backupEngine = backupEngine ?? throw new ArgumentNullException(nameof(backupEngine));
         _manifestRepository = manifestRepository ?? throw new ArgumentNullException(nameof(manifestRepository));
+        _schedulerService = schedulerService ?? throw new ArgumentNullException(nameof(schedulerService));
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
 
         // Default backup destination to Pictures\iBackup
@@ -132,11 +148,49 @@ public partial class MainViewModel : ObservableObject
         _backupEngine.BackupCompleted += OnBackupCompleted;
         _backupEngine.BackupFailed += OnBackupFailed;
 
+        // Subscribe to schedule triggers
+        _schedulerService.ScheduledBackupTriggered += OnScheduledBackupTriggered;
+
         // Check for already connected devices on startup
         CheckInitialDeviceConnection();
 
-        // Load historical stats
+        // Load historical stats and update drive status
         _ = LoadInitialStatsAsync();
+        UpdateStorageAndScheduleInfo();
+    }
+
+    private void UpdateStorageAndScheduleInfo()
+    {
+        // Destination disk space
+        if (!string.IsNullOrWhiteSpace(DestinationPath))
+        {
+            if (BackupEngine.HasSufficientDiskSpace(DestinationPath, 0, out long freeBytes))
+            {
+                DestinationFreeSpaceSummary = $"{FileSizeConverter.FormatBytes(freeBytes)} free on target drive";
+            }
+        }
+
+        // Schedule countdown
+        var next = _schedulerService.CurrentSchedule.CalculateNextRunTime(DateTime.Now);
+        NextScheduledBackupSummary = next.HasValue
+            ? $"Next scheduled sync: {next.Value:g}"
+            : "No schedule active";
+    }
+
+    private void OnScheduledBackupTriggered(object? sender, DateTime triggerTime)
+    {
+        RunOnUIThread(() =>
+        {
+            if (IsDeviceConnected && !IsBackingUp && CanStartBackup)
+            {
+                ShowMessage("Scheduled backup starting", "Executing scheduled automatic media backup...", InfoBarSeverity.Informational);
+                _ = StartBackupAsync();
+            }
+            else if (!IsDeviceConnected)
+            {
+                ShowMessage("Scheduled backup ready", "A scheduled backup is due. Connect your iPhone via USB or Wi-Fi to begin.", InfoBarSeverity.Informational);
+            }
+        });
     }
 
     /// <summary>
@@ -154,6 +208,14 @@ public partial class MainViewModel : ObservableObject
                 IsDeviceConnected = true;
                 StatusText = $"Connected to {device.Name}";
                 ActivityStage = "Ready";
+                ConnectionModeText = device.Model.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase) ? "Wi-Fi Sync" : "USB Connection";
+
+                if (device.TotalStorageBytes > 0)
+                {
+                    DeviceStoragePercent = Math.Clamp((double)device.UsedStorageBytes / device.TotalStorageBytes * 100.0, 0.0, 100.0);
+                    DeviceStorageFormatted = device.FriendlyStorageSummary;
+                }
+
                 ShowMessage(
                     "iPhone ready",
                     "Keep the iPhone unlocked and trusted while scanning and copying media.",
@@ -163,7 +225,6 @@ public partial class MainViewModel : ObservableObject
         }
         catch
         {
-            // Fallback to default disconnected state
             IsDeviceConnected = false;
         }
     }
@@ -175,7 +236,9 @@ public partial class MainViewModel : ObservableObject
     {
         try
         {
-            var settings = await _manifestRepository.GetDeviceSettingsAsync(udid);
+            var settings = await _manifestRepository.GetDeviceSettingsAsync(udid)
+                ?? await _manifestRepository.GetDeviceSettingsAsync("global_default");
+
             if (settings != null)
             {
                 RunOnUIThread(() =>
@@ -185,6 +248,7 @@ public partial class MainViewModel : ObservableObject
                         DestinationPath = settings.DestinationPath;
                     }
                     AutoBackupOnConnect = settings.AutoBackup;
+                    UpdateStorageAndScheduleInfo();
                 });
             }
         }
@@ -271,17 +335,21 @@ public partial class MainViewModel : ObservableObject
 
             _backupCts = new CancellationTokenSource();
 
+            // Load saved user preferences from SQLite
+            var savedSettings = await _manifestRepository.GetDeviceSettingsAsync(ConnectedDevice.Udid)
+                ?? await _manifestRepository.GetDeviceSettingsAsync("global_default");
+
             var settings = new BackupSettings
             {
                 DeviceUdid = ConnectedDevice.Udid,
                 DestinationPath = DestinationPath,
                 AutoBackup = AutoBackupOnConnect,
-                OrganizationMode = FileOrganizationMode.ByYearMonth,
-                IncludePhotos = true,
-                IncludeVideos = true,
-                IncludeRaw = true,
-                IncludeScreenshots = true,
-                VerifyIntegrity = true,
+                OrganizationMode = savedSettings?.OrganizationMode ?? FileOrganizationMode.ByYearMonth,
+                IncludePhotos = savedSettings?.IncludePhotos ?? true,
+                IncludeVideos = savedSettings?.IncludeVideos ?? true,
+                IncludeRaw = savedSettings?.IncludeRaw ?? true,
+                IncludeScreenshots = savedSettings?.IncludeScreenshots ?? true,
+                VerifyIntegrity = savedSettings?.VerifyIntegrity ?? false,
                 MinimizeToTray = MinimizeToTray
             };
 
@@ -297,8 +365,7 @@ public partial class MainViewModel : ObservableObject
 
             var device = ConnectedDevice;
             var token = _backupCts.Token;
-            // WPD exposes blocking COM calls even behind async enumeration.
-            // Keep those calls off the UI thread so progress and Cancel work.
+
             await Task.Run(() => _backupEngine.StartBackupAsync(device, settings, token));
         }
         catch (OperationCanceledException)
@@ -319,125 +386,110 @@ public partial class MainViewModel : ObservableObject
             IsScanning = false;
             IsPaused = false;
             StartButtonText = "Start Backup";
-            _backupCts?.Dispose();
-            _backupCts = null;
+            UpdateStorageAndScheduleInfo();
         }
     }
 
-    /// <summary>
-    /// Toggles between pausing and resuming the current backup session.
-    /// </summary>
     [RelayCommand(CanExecute = nameof(CanPauseResume))]
     public void PauseResume()
     {
-        if (!IsBackingUp)
-        {
-            return;
-        }
+        if (!IsBackingUp) return;
 
         if (IsPaused)
         {
             _backupEngine.Resume();
             IsPaused = false;
-            StatusText = "Resuming backup...";
+            ActivityStage = "Copying";
+            StatusText = "Backup resumed.";
         }
         else
         {
             _backupEngine.Pause();
             IsPaused = true;
-            StatusText = "Backup paused";
+            ActivityStage = "Paused";
+            StatusText = "Backup paused.";
         }
     }
 
-    /// <summary>
-    /// Cancels the currently active backup operation.
-    /// </summary>
     [RelayCommand(CanExecute = nameof(CanCancelBackup))]
     public void CancelBackup()
     {
-        if (!IsBackingUp)
-        {
-            return;
-        }
+        if (!IsBackingUp) return;
 
+        ActivityStage = "Cancelling";
         StatusText = "Cancelling backup...";
-        _backupCts?.Cancel();
         _backupEngine.Cancel();
+        _backupCts?.Cancel();
     }
 
-    /// <summary>
-    /// Triggers folder picker dialog in the View.
-    /// </summary>
     [RelayCommand]
     public void BrowseDestination()
     {
         RequestBrowseFolder?.Invoke();
     }
 
-    /// <summary>
-    /// Opens the current backup destination in File Explorer.
-    /// </summary>
     [RelayCommand]
     public void OpenDestination()
     {
-        OpenFolder(DestinationPath, "The backup folder is not available yet.");
+        OpenFolder(DestinationPath, "Choose a backup folder first.");
     }
 
-    /// <summary>
-    /// Opens the local diagnostic log folder for support and troubleshooting.
-    /// </summary>
     [RelayCommand]
     public void OpenLogs()
     {
-        try
-        {
-            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            var logPath = Path.Combine(localAppData, "iBackup", "logs");
-            Directory.CreateDirectory(logPath);
-            OpenFolder(logPath, "The diagnostics folder could not be opened.");
-        }
-        catch (Exception ex)
-        {
-            ShowMessage("Could not open diagnostics", ex.Message, InfoBarSeverity.Error);
-        }
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var logDirectory = Path.Combine(localAppData, "iBackup", "logs");
+        OpenFolder(logDirectory, "Diagnostic logs are not available yet.");
     }
 
     private void OnDeviceConnected(object? sender, DeviceInfo device)
     {
         RunOnUIThread(() =>
         {
-            if (IsBackingUp) return;
             ConnectedDevice = device;
             IsDeviceConnected = true;
             StatusText = $"Connected to {device.Name}";
             ActivityStage = "Ready";
+            ConnectionModeText = device.Model.Contains("Wi-Fi", StringComparison.OrdinalIgnoreCase) ? "Wi-Fi Sync" : "USB Connection";
+
+            if (device.TotalStorageBytes > 0)
+            {
+                DeviceStoragePercent = Math.Clamp((double)device.UsedStorageBytes / device.TotalStorageBytes * 100.0, 0.0, 100.0);
+                DeviceStorageFormatted = device.FriendlyStorageSummary;
+            }
+
             ShowMessage(
                 "iPhone connected",
-                "Keep it unlocked and tap Trust This Computer if iOS asks.",
+                "Keep the iPhone unlocked and trusted while scanning and copying media.",
                 InfoBarSeverity.Success);
 
             _ = LoadAndMaybeStartAsync(device.Udid);
+            _ = LoadInitialStatsAsync();
         });
     }
 
-    private void OnDeviceDisconnected(object? sender, string udid)
+    private void OnDeviceDisconnected(object? sender, string deviceId)
     {
         RunOnUIThread(() =>
         {
-            if (ConnectedDevice?.Udid == udid)
+            if (ConnectedDevice?.Udid == deviceId)
             {
-                ConnectedDevice = null;
-                IsDeviceConnected = false;
-                ActivityStage = "Disconnected";
-                StatusText = "Device disconnected. Waiting for device...";
-                ShowMessage("iPhone disconnected", "Reconnect the cable to continue.", InfoBarSeverity.Warning);
-
                 if (IsBackingUp)
                 {
-                    _backupCts?.Cancel();
-                    _backupEngine.Cancel();
-                    StatusText = "Device disconnected during backup.";
+                    CancelBackup();
                 }
+
+                ConnectedDevice = null;
+                IsDeviceConnected = false;
+                StatusText = "Device disconnected. Reconnect your iPhone to continue.";
+                ActivityStage = "Disconnected";
+                DeviceStorageFormatted = string.Empty;
+                DeviceStoragePercent = 0;
+
+                ShowMessage(
+                    "iPhone disconnected",
+                    "The device was unplugged or lost connection. Reconnect it and keep it unlocked to resume.",
+                    InfoBarSeverity.Warning);
             }
         });
     }
@@ -446,37 +498,39 @@ public partial class MainViewModel : ObservableObject
     {
         RunOnUIThread(() =>
         {
-            if (!IsBackingUp) return;
             IsScanning = progress.IsScanning;
 
             if (progress.IsScanning)
             {
                 ActivityStage = "Scanning";
                 StartButtonText = "Scanning...";
-                FilesProgress = $"{progress.FilesCompleted:N0} media files found";
-                BytesProgress = "Starts after scan";
-                EstimatedTimeRemaining = "After scan";
-                StatusText = $"Found {progress.FilesCompleted:N0} files. Scanning {progress.CurrentFileName}...";
+                StatusText = string.IsNullOrWhiteSpace(progress.CurrentFileName)
+                    ? "Scanning for media files..."
+                    : $"Found {progress.FilesCompleted:N0} files...";
+                FilesProgress = $"{progress.FilesCompleted:N0} found";
+                BytesProgress = "Calculating";
+                EstimatedTimeRemaining = "Scanning";
+                ProgressPercent = 0;
                 return;
             }
 
-            ActivityStage = "Copying";
+            ActivityStage = IsPaused ? "Paused" : "Copying";
             StartButtonText = "Backing up...";
-            ProgressPercent = progress.PercentComplete;
-            FilesProgress = $"{progress.FilesCompleted:N0} / {progress.TotalFiles:N0} files";
-            BytesProgress = $"{FileSizeConverter.FormatBytes(progress.BytesCompleted)} / {FileSizeConverter.FormatBytes(progress.TotalBytes)}";
 
-            if (progress.EstimatedSecondsRemaining.HasValue)
+            if (progress.TotalFiles > 0)
             {
-                var remaining = TimeSpan.FromSeconds(progress.EstimatedSecondsRemaining.Value);
-                EstimatedTimeRemaining = remaining.TotalHours >= 1
-                    ? $"{remaining.Hours}h {remaining.Minutes}m remaining"
-                    : $"{remaining.Minutes}m {remaining.Seconds}s remaining";
+                ProgressPercent = Math.Min(100.0, Math.Max(0.0, (double)progress.FilesCompleted / progress.TotalFiles * 100.0));
+                FilesProgress = $"{progress.FilesCompleted:N0} / {progress.TotalFiles:N0}";
             }
-            else
+
+            if (progress.TotalBytes > 0)
             {
-                EstimatedTimeRemaining = "--:--";
+                BytesProgress = $"{FileSizeConverter.FormatBytes(progress.BytesCompleted)} / {FileSizeConverter.FormatBytes(progress.TotalBytes)}";
             }
+
+            EstimatedTimeRemaining = progress.EstimatedSecondsRemaining.HasValue
+                ? TimeSpan.FromSeconds(progress.EstimatedSecondsRemaining.Value).ToString(@"mm\:ss")
+                : "--:--";
 
             if (!string.IsNullOrWhiteSpace(progress.CurrentFileName))
             {

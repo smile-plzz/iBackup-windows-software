@@ -36,6 +36,11 @@
                         <SymbolIcon Symbol="Home" />
                     </NavigationViewItem.Icon>
                 </NavigationViewItem>
+                <NavigationViewItem Content="Wireless" Tag="wireless">
+                    <NavigationViewItem.Icon>
+                        <FontIcon Glyph="&#xE701;" />
+                    </NavigationViewItem.Icon>
+                </NavigationViewItem>
                 <NavigationViewItem Content="History" Tag="history">
                     <NavigationViewItem.Icon>
                         <SymbolIcon Symbol="Clock" />
