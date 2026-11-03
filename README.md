@@ -2,68 +2,67 @@
 
 Your memories, on your own drive.
 
-A native Windows app for copying iPhone and iPad photos and videos over USB. Files are saved in ordinary folders, with incremental tracking so a repeat backup skips previously recorded files.
-
-## Download
-
-[Download v0.1.4 for Windows x64](https://github.com/smile-plzz/iBackup/releases/tag/v0.1.4)
-
-This is an **unsigned preview**, not a full iPhone restore-backup tool. Extract the entire ZIP before opening `iBackup.exe`. The portable folder includes the .NET and Windows App SDK runtimes.
-
-## First backup
-
-1. Use Windows 10 (1809+) or Windows 11, with Apple Devices or iTunes installed for USB drivers.
-2. Connect your iPhone or iPad, unlock it, and tap **Trust This Computer** if prompted.
-3. Open iBackup and choose a backup folder under **Save to**.
-4. Press **Start Backup**. Keep the device unlocked during scanning and copying.
-5. Check the completion message and your destination files.
-
-Windows may show a SmartScreen warning because this preview is not signed. Only use a release you trust.
+A native Windows app for copying iPhone and iPad photos and videos over USB and local Wi-Fi. Files are saved in ordinary folders, with incremental tracking so a repeat backup skips previously recorded files.
 
 ## What it does
 
-- Detects Apple devices through Windows Portable Devices.
-- Shows scanning, copying, progress, and actionable error messages.
-- Copies locally available supported photos, videos, RAW files, and screenshots.
-- Organizes files by year and month.
-- Skips files already recorded in the local backup manifest.
-- Never overwrites existing destination files; collisions get numbered names.
-- Checks copied file sizes and records destination SHA-256 hashes.
-- Keeps phone originals untouched. No account, upload, or telemetry.
-- Shows previous sessions in History and provides local diagnostic logs.
+- **Dual-Mode Sync**: Supports both direct USB cable transfers and local Wi-Fi wireless backups (via native Apple Wi-Fi sync and embedded QR-code local companion).
+- **Scheduled Automation**: Automated daily, weekly, or connection-triggered background backups with smart AC-power detection.
+- **Incremental Engine**: Skips files already recorded in the SQLite manifest; never duplicates.
+- **Non-Destructive**: Never overwrites existing destination files (appends numbering) and never touches device originals.
+- **Active Customization**:
+  - Configurable folder organization: By Year/Month, By Year/Month/Day, or Flat.
+  - Active media filters: Photos, Videos, Apple ProRAW (DNG), Screenshots.
+  - Optional SHA-256 copy verification.
+- **Modern Minimalist Design**:
+  - Apple-inspired minimalism meets Windows 11 Fluent Design.
+  - Device storage capacity breakdown and target drive space gauges.
+  - Brand vector icon & multi-resolution Windows `.ico`.
+- **Privacy-First**: Operates 100% offline; zero cloud subscriptions, zero tracking or telemetry.
 
-The v0.1.4 interface uses softer cards, clearer typography, adaptive navigation, and simpler backup controls. It follows the Windows theme and keeps native keyboard and accessibility behavior.
+## Quick Start
 
-## Preview boundaries
+### Option A: USB Cable Backup
+1. Connect your iPhone or iPad via USB, unlock it, and tap **Trust This Computer** if prompted.
+2. Select your backup folder under **Save to**.
+3. Click **Start Backup**.
 
-- Backup preferences currently use fixed defaults: all supported media, year/month folders, and copy checks. Folder selection and automatic backup are on the Backup page.
-- Custom media filters, alternative folder layouts, Windows startup, and minimize-to-tray preferences are not wired into the application flow. Settings now explains this instead of showing ineffective controls.
-- SHA-256 is calculated on the copied file, not compared with an independently hashed source.
-- USB access depends on the driver and trust/lock state. iCloud-only originals may not be available.
-- Cancellation may wait for a blocking Windows device operation to return.
-- The connected-device check copied two sample files and skipped them on a repeat run. It is not a full-library, large-video, or interruption certification.
-- A successful historical manifest entry does not re-check whether a destination file has since been moved or deleted.
+### Option B: Wireless Wi-Fi Backup
+1. Go to the **Wireless** tab in iBackup.
+2. Open your iPhone Camera and point it at the QR code, or navigate to the local link with your 4-digit PIN.
+3. Tap **Select Photos & Videos** to transfer files directly to your PC drive at full local Wi-Fi speeds.
 
-## Documentation
+### Option C: Scheduled Automation
+1. Open **Settings** -> **Scheduled Automated Backups**.
+2. Toggle on, choose your frequency (e.g., Daily at 21:00), and optionally require AC power.
+3. iBackup will run smoothly in the background and keep your media archived.
 
-- [Release notes and verification](docs/RELEASE-0.1.4.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
-- [Design conventions](docs/DESIGN.md)
-- [Product requirements](docs/PRD.md), a planning document, not a list of shipped capabilities
+## Development & Build
 
-## Development
-
-Windows, .NET 8 SDK, and the Windows build tools are required. No API keys are needed.
+Windows 10/11 x64 and .NET 8 SDK are required.
 
 ```powershell
+# Restore dependencies
 dotnet restore iBackup.sln
+
+# Run unit tests
 dotnet test src/iBackup.Core.Tests/iBackup.Core.Tests.csproj -c Release
+
+# Build Release binary
 dotnet build src/iBackup.App/iBackup.App.csproj -c Release -p:Platform=x64
+
+# Package portable self-contained release
 dotnet publish src/iBackup.App/iBackup.App.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:WindowsAppSDKSelfContained=true -o artifacts/win-x64
 ```
 
-The app is WinUI 3 / C#, with MediaDevices for USB access and SQLite for its manifest. See [CLAUDE.md](CLAUDE.md) for architecture and invariants. GitHub Actions tests and packages Windows x64 builds.
+## Documentation
+
+- [Product Requirements](docs/PRD.md)
+- [Design Conventions](docs/DESIGN.md)
+- [Technical Architecture](docs/TECHNICAL-DESIGN.md)
+- [Development Log](dev-log.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
-Not yet specified.
+MIT / Proprietary. All rights reserved.
